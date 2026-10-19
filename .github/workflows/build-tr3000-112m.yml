@@ -128,14 +128,26 @@ jobs:
           cp "$builder" output/
           packages=$(cat output/packages.txt)
           make -C builder image PROFILE=cudy_tr3000-v1 PACKAGES="$packages"
-          manifest=builder/bin/targets/mediatek/filogic/immortalwrt-25.12.1-mediatek-filogic-cudy_tr3000-v1.manifest
-          test -s "$manifest"
+          target_dir=builder/bin/targets/mediatek/filogic
+          # Preserve completed images even if a post-build check fails.
+          find "$target_dir" -maxdepth 1 -type f -exec cp -t output/ {} +
+          # Source builds need not enable CONFIG_VERSION_FILENAMES.
+          mapfile -t manifests < <(find "$target_dir" -maxdepth 1 -type f -name '*-cudy_tr3000-v1.manifest')
+          if [ "${#manifests[@]}" -ne 1 ]; then
+            echo "Expected one TR3000 manifest; available output files:"
+            ls -lah "$target_dir"
+            exit 1
+          fi
+          manifest=${manifests[0]}
+          if [ ! -s "$manifest" ]; then
+            echo "Empty firmware manifest: $manifest"; exit 1
+          fi
+          echo "Checking final packages in $manifest"
           for package in $packages; do
             awk -v wanted="$package" '$1 == wanted { found=1 } END { exit !found }' "$manifest" || {
               echo "Required package missing from final firmware: $package"; exit 1;
             }
           done
-          cp builder/bin/targets/mediatek/filogic/* output/
           # Keep the stock compatibility ID; distinguish the layout in the filename.
           for image in output/*-cudy_tr3000-v1-squashfs-sysupgrade.bin; do
             test -f "$image"
