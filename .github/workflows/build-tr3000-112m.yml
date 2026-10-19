@@ -33,7 +33,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib \
+          sudo apt-get install -y build-essential clang llvm lld flex bison g++ gawk gcc-multilib \
             gettext git libncurses-dev libssl-dev python3 python3-setuptools \
             rsync swig unzip zlib1g-dev file wget curl zstd device-tree-compiler
           df -h .
@@ -55,10 +55,28 @@ jobs:
           printf '%s\n' \
             CONFIG_TARGET_mediatek=y \
             CONFIG_TARGET_mediatek_filogic=y \
-            CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3000-v1=y \
             CONFIG_TARGET_MULTI_PROFILE=y \
+            CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3000-v1=y \
             CONFIG_TARGET_PER_DEVICE_ROOTFS=y \
+            CONFIG_DEVEL=y \
+            CONFIG_BPF_TOOLCHAIN_HOST=y \
+            CONFIG_KERNEL_DEBUG_INFO=y \
+            '# CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set' \
+            CONFIG_KERNEL_DEBUG_INFO_BTF=y \
+            CONFIG_KERNEL_BPF_EVENTS=y \
+            CONFIG_KERNEL_CGROUPS=y \
+            CONFIG_KERNEL_CGROUP_BPF=y \
             CONFIG_IB=y > .config
+          # Resolve target/toolchain dependencies before selecting feed packages.
+          make defconfig
+          for symbol in TARGET_mediatek_filogic_DEVICE_cudy_tr3000-v1 HAS_BPF_TOOLCHAIN USE_LLVM_HOST KERNEL_DEBUG_INFO_BTF KERNEL_BPF_EVENTS KERNEL_CGROUP_BPF; do
+            grep -qxF "CONFIG_${symbol}=y" .config || {
+              cp .config ../output/source.config
+              echo "Required target/eBPF configuration not enabled: $symbol"; exit 1;
+            }
+          done
+          clang --version
+          llvm-strip --version
           packages="luci luci-i18n-base-zh-cn kmod-wireguard wireguard-tools luci-proto-wireguard kmod-usb-net-rndis kmod-usb-net-cdc-ether kmod-usb-net-cdc-ncm"
           if [ "$INCLUDE_DAED" = true ]; then
             packages="$packages daed luci-app-daed luci-i18n-daed-zh-cn"
@@ -70,9 +88,15 @@ jobs:
             printf 'CONFIG_PACKAGE_%s=m\n' "$package" >> .config
           done
           make defconfig
+          # Save diagnostics even if Kconfig drops a requested package.
+          cp .config ../output/source.config
+          cp tmp/.config-package.in ../output/config-package.in
+          cp feeds/packages/net/daed/Makefile ../output/daed-Makefile
           for package in $packages; do
             grep -qxF -e "CONFIG_PACKAGE_${package}=m" -e "CONFIG_PACKAGE_${package}=y" .config || {
-              echo "Package not available: $package"; exit 1;
+              echo "Package missing or disabled by dependencies: $package"
+              grep -A 25 -F "config PACKAGE_${package}" tmp/.config-package.in || true
+              exit 1
             }
           done
           printf '%s\n' "$packages" > ../output/packages.txt
