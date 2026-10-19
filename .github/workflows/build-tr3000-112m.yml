@@ -1,0 +1,129 @@
+name: Build TR3000 112m NMBM
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_daed:
+        description: "集成 daed 和 LuCI 界面"
+        type: boolean
+        default: true
+      extra_packages:
+        description: "额外软件包，以空格分隔；默认已含 WireGuard、Android/iPhone USB 共享"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tr3000-112m-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      SOURCE_REF: v25.12.1
+      INCLUDE_DAED: ${{ inputs.include_daed }}
+      EXTRA_PACKAGES: ${{ inputs.extra_packages }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib \
+            gettext git libncurses-dev libssl-dev python3 python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget curl zstd device-tree-compiler
+          df -h .
+
+      - name: Fetch source and apply stock NMBM 112m adaptation
+        run: |
+          git clone --depth 1 --branch "$SOURCE_REF" https://github.com/immortalwrt/immortalwrt.git source
+          python3 tr3000-112m/prepare.py source
+          mkdir -p output
+          git -C source rev-parse HEAD > output/source-commit.txt
+          git -C source diff > output/112m-source.patch
+          cp tr3000-112m/README.md output/README-112m.md
+
+      - name: Configure kernel, packages and dedicated ImageBuilder
+        working-directory: source
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          printf '%s\n' \
+            CONFIG_TARGET_mediatek=y \
+            CONFIG_TARGET_mediatek_filogic=y \
+            CONFIG_TARGET_mediatek_filogic_DEVICE_cudy_tr3000-v1=y \
+            CONFIG_TARGET_MULTI_PROFILE=y \
+            CONFIG_TARGET_PER_DEVICE_ROOTFS=y \
+            CONFIG_IB=y > .config
+          packages="luci luci-i18n-base-zh-cn kmod-wireguard wireguard-tools luci-proto-wireguard kmod-usb-net-rndis kmod-usb-net-cdc-ether kmod-usb-net-cdc-ncm"
+          if [ "$INCLUDE_DAED" = true ]; then
+            packages="$packages daed luci-app-daed luci-i18n-daed-zh-cn"
+          fi
+          packages="$packages $EXTRA_PACKAGES"
+          # Reject shell/config metacharacters and unavailable package names.
+          for package in $packages; do
+            [[ "$package" =~ ^[a-zA-Z0-9][a-zA-Z0-9+_.-]*$ ]] || exit 1
+            printf 'CONFIG_PACKAGE_%s=m\n' "$package" >> .config
+          done
+          make defconfig
+          for package in $packages; do
+            grep -qxF -e "CONFIG_PACKAGE_${package}=m" -e "CONFIG_PACKAGE_${package}=y" .config || {
+              echo "Package not available: $package"; exit 1;
+            }
+          done
+          printf '%s\n' "$packages" > ../output/packages.txt
+          cp .config ../output/source.config
+          ./scripts/feeds list -s > ../output/feeds.txt
+
+      - name: Build dedicated kernel and ImageBuilder
+        working-directory: source
+        run: |
+          set -o pipefail
+          make download -j4
+          make -j2 V=s 2>&1 | tee ../output/build.log
+
+      - name: Verify compiled DTB before packaging
+        run: |
+          dtb=$(find source/build_dir -type f -name '*mt7981b-cudy-tr3000-v1.dtb' -print -quit)
+          test -n "$dtb"
+          node=/soc/spi@1100a000/flash@0
+          fdtget "$dtb" "$node" mediatek,nmbm
+          test "$(fdtget -t x "$dtb" "$node/partitions/partition@5c0000" reg)" = '5c0000 7000000'
+          cp "$dtb" output/tr3000-112m.dtb
+
+      - name: Build customized image using the new ImageBuilder
+        run: |
+          builder=$(find source/bin/targets/mediatek/filogic -maxdepth 1 -name '*imagebuilder*.tar.*' -print -quit)
+          test -n "$builder"
+          mkdir builder
+          tar -xf "$builder" -C builder --strip-components=1
+          cp "$builder" output/
+          packages=$(cat output/packages.txt)
+          make -C builder image PROFILE=cudy_tr3000-v1 PACKAGES="$packages"
+          manifest=builder/bin/targets/mediatek/filogic/immortalwrt-25.12.1-mediatek-filogic-cudy_tr3000-v1.manifest
+          test -s "$manifest"
+          for package in $packages; do
+            awk -v wanted="$package" '$1 == wanted { found=1 } END { exit !found }' "$manifest" || {
+              echo "Required package missing from final firmware: $package"; exit 1;
+            }
+          done
+          cp builder/bin/targets/mediatek/filogic/* output/
+          # Keep the stock compatibility ID; distinguish the layout in the filename.
+          for image in output/*-cudy_tr3000-v1-squashfs-sysupgrade.bin; do
+            test -f "$image"
+            mv "$image" "${image%-squashfs-sysupgrade.bin}-112m-nmbm-squashfs-sysupgrade.bin"
+          done
+          cd output
+          sha256sum *112m-nmbm-squashfs-sysupgrade.bin > SHA256SUMS-112m
+
+      - name: Upload firmware, reusable ImageBuilder and build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tr3000-112m-nmbm-${{ github.run_number }}
+          path: output/
+          retention-days: 14
