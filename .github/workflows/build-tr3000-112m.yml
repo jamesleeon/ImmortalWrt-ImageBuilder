@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       include_daed:
-        description: "集成 daed 和 LuCI 界面"
+        description: "可选：预装 daed 和 LuCI 界面（不勾选也保留 eBPF 内核和模块）"
         type: boolean
-        default: true
+        default: false
       extra_packages:
         description: "额外软件包，以空格分隔；默认已含 WireGuard、Android USB 共享、软件包管理中文"
         type: string
@@ -81,6 +81,9 @@ jobs:
           clang --version
           llvm-strip --version
           packages="luci luci-i18n-base-zh-cn luci-i18n-package-manager-zh-cn kmod-wireguard wireguard-tools luci-proto-wireguard kmod-usb-net-rndis kmod-usb-net-cdc-ether kmod-usb-net-cdc-ncm"
+          # Ship runtime modules even when no dae/daed application is installed.
+          # Later installation must not require ABI-incompatible public kmods.
+          packages="$packages kmod-sched-core kmod-sched-bpf kmod-xdp-sockets-diag kmod-veth"
           if [ "$INCLUDE_DAED" = true ]; then
             packages="$packages daed luci-app-daed luci-i18n-daed-zh-cn"
           fi
@@ -156,6 +159,11 @@ jobs:
             awk '$1 == "daed" && $3 == "2.1.1-r1" { found=1 } END { exit !found }' "$manifest" || {
               echo "Final image must contain daed 2.1.1-r1, not the old feed package"; exit 1;
             }
+          else
+            if awk '$1 == "daed" || $1 == "luci-app-daed" { found=1 } END { exit !found }' "$manifest"; then
+              echo "daed unexpectedly included; enable its explicit workflow option to preinstall it"
+              exit 1
+            fi
           fi
           cp image-files/etc/apk/repositories.d/distfeeds.list output/firmware-distfeeds.list
           cp tr3000-112m/daed/Makefile output/daed-release-recipe.Makefile

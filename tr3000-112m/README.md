@@ -7,12 +7,14 @@
 ## 如何构建
 
 1. 将本次修改推送到自己的仓库后，在 Actions 中打开 **Build TR3000 112m NMBM**。
-2. 点击 Run workflow，选择是否集成 daed；额外软件包填官方软件源中的准确包名。
+2. 点击 Run workflow，默认不勾选 daed；需要预装时才勾选，额外软件包填官方源中的准确包名。
 3. 等待构建完成，在该次运行的 Artifacts 下载构建结果。首次从源码编译可能需要数小时。
 4. 固件名称包含 `112m-nmbm-squashfs-sysupgrade.bin`；同时提供专用 ImageBuilder、
    编译后的 DTB、源码补丁、配置、包清单、源码提交及校验值。
 
 默认集成 LuCI、中文界面（含软件包管理中文包）、WireGuard、Android RNDIS/NCM USB 共享组件。
+eBPF/BTF/cgroup 内核支持和 sched-bpf、XDP 诊断、veth 等运行模块始终保留。
+默认不安装 dae/daed 程序及 daed 界面，刷机后自行决定是否安装；不需要为此重新编译内核。
 不集成 iPhone 专用组件、ModemManager 或短信工具。CamoDNS-Lite 暂不自动打包，可后续单独部署。
 daed 可与其他功能共存，但运行时 DNS、分流及路由需另行配置。
 
